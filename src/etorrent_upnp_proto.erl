@@ -46,6 +46,7 @@ parse_msearch_resp(Resp) ->
     %% Only interested in headers, strips off first line of the response.
     {ok, _, H} = erlang:decode_packet(http, list_to_binary(Resp), []),
     case parse_headers(H) of
+        [] -> {error, {bad_response, ""}};
         Headers when is_list(Headers) ->
             Age = parse_max_age(Headers),
             Loc = get_header(<<"LOCATION">>, Headers),
@@ -54,7 +55,8 @@ parse_msearch_resp(Resp) ->
             {Cat, Type, Ver} = case re:split(binary_to_list(ST), ":", [{return, binary}]) of
                                    [_, _, C, T, V] -> {C, T, V};
                                    [<<"upnp">>, ?UPNP_RD_NAME] -> {<<"device">>, ?UPNP_RD_NAME, <<>>};
-                                   [<<"uuid">>, _] -> {<<"uuid">>, <<>>, <<>>}
+                                   [<<"uuid">>, _] -> {<<"uuid">>, <<>>, <<>>};
+                                   [C|_] -> {C, <<>>, <<>>}
                                end,
             USN = get_header(<<"USN">>, Headers),
             [_, UUID|_] = re:split(binary_to_list(USN), ":", [{return, binary}]),
@@ -72,7 +74,8 @@ parse_msearch_resp(Resp) ->
                                    {uuid,   UUID},
                                    {loc,    Loc}]};
                 <<"uuid">> ->
-                    {ok, uuid}
+                    {ok, uuid};
+                _ -> {error, {unwanted_category, Cat}}
             end
     end.
 
@@ -146,7 +149,7 @@ ll_parse_desc(LocalAddr, DS, {DAcc, SAcc}) ->
     catch
         error:Reason -> throw({error, Reason})
     end.
-    
+
 
 -spec parse_device_desc(inet:ip_address(), term()) -> etorrent_types:upnp_device().
 parse_device_desc(LocalAddr, Desc) ->
@@ -257,9 +260,9 @@ parse_ctl_err_resp(Resp) ->
 parse_headers(Bin) ->
     Lines = binary:split(Bin, <<?CRLF>>, [global, trim]),
     [begin
-         case binary:split(L, <<": ">>, [trim]) of
+         case binary:split(L, [<<":">>, <<": ">>], [trim]) of
              [Key, Value] -> {Key, Value};
-             Key -> {Key}
+             [Key] -> {Key}
          end
      end || L <- Lines].
 %%
@@ -269,7 +272,7 @@ parse_headers(Bin) ->
 %%
 -spec parse_sub_resp(term()) -> string() | undefined.
 parse_sub_resp(Resp) ->
-    
+
     Headers = parse_headers(Resp),
     case lists:keyfind(<<"SID">>, 1, Headers) of
         false -> undefined;
@@ -538,4 +541,3 @@ wrt54g_sub_resp_test() ->
 
 
 -endif.
-

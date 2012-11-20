@@ -4,7 +4,7 @@
 %%
 %%      Note that there's no discovery operation exported by this
 %%      module, because discovery is initiated automatically when
-%%      starting. 
+%%      starting.
 %%
 %% @todo May be able to substitute all etorrent_upnp_entity:method(Entity)
 %%       call with Entity:method. spots that pattern in mochiweb
@@ -265,9 +265,9 @@ handle_info({udp, _Socket, _IP, _Port, Packet}, State) ->
         {ok, service, S} ->
             etorrent_upnp_entity:create(service, S);
         {ok, uuid} ->
-            ok
-        %% {error, _Reason} ->
-        %%     etorrent_event:notify({malformed_upnp_msearch_resp, Packet})
+            ok;
+        {error, _Reason} ->
+            etorrent_event:notify({malformed_upnp_msearch_resp, Packet})
     end,
     {noreply, State};
 handle_info(Info, State) ->
@@ -383,4 +383,3 @@ decode_host(URL) ->
         N when is_integer(N) ->
             Host ++ ":" ++ integer_to_list(N)
     end.
-

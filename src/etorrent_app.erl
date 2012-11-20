@@ -59,8 +59,8 @@ consider_profiling() ->
         true ->
             eprof:start(),
             eprof:start_profiling([self()]);
-            false ->
-                ignore
+        _ ->
+            ignore
     end.
 
 %% @doc Output profile information
