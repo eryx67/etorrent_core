@@ -7,7 +7,7 @@
 -module(etorrent_upnp_handler).
 -behaviour(cowboy_http_handler).
 
--export([init/3, handle/2, terminate/2]).
+-export([init/3, handle/2, terminate/3]).
 
 %% API
 -export([get_port/0]).
@@ -43,5 +43,5 @@ handle(Req, State) ->
             {ok, Reply, State}
     end.
 
-terminate(_Req, _State) ->
+terminate(_Reason, _Req, _State) ->
     ok.
