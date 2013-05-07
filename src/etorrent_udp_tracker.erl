@@ -172,7 +172,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%--------------------------------------------------------------------
 
-announce_request({IP, Port}, ConnID, PropL, N) ->
+announce_request({TrIP, TrPort}, ConnID, PropL, N) ->
     [IH, PeerId, Down, Left, Up, Event, Key, Port] =
 	[proplists:get_value(K, PropL)
 	 || K <- [info_hash, peer_id, down, left, up, event, key, port]],
@@ -181,7 +181,7 @@ announce_request({IP, Port}, ConnID, PropL, N) ->
     erlang:send_after(expire_time(N), self(), timeout),
     Msg = {announce_request, ConnID, Tid, IH, PeerId, {Down, Left, Up}, Event, Key,
 	   Port},
-    etorrent_udp_tracker_mgr:msg({IP, Port}, Msg),
+    etorrent_udp_tracker_mgr:msg({TrIP, TrPort}, Msg),
     Tid.
 
 request_connid({IP, Port}, N) ->
