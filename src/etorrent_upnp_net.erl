@@ -169,6 +169,7 @@ add_port_mapping(Service, Proto, Port) ->
 %% gen_server callbacks
 %%===================================================================
 init([]) ->
+    process_flag(trap_exit, true),
     HTTPd_Dispatch = cowboy_router:compile([ {'_', [{'_', etorrent_upnp_handler, []}]} ]),
     {ok, _Pid} = cowboy:start_http(?HTTP_LISTENER, 10, [{port, 1234}],
                                    [{env, [{dispatch, HTTPd_Dispatch}]}]),
