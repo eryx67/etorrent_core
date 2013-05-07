@@ -42,6 +42,7 @@
 -define(SSDP_ADDR, "239.255.255.250").
 -define(SSDP_PORT, 1900).
 
+-define(HTTP_LISTENER, upnp_cowboy).
 
 %%===================================================================
 %% API
@@ -168,6 +169,9 @@ add_port_mapping(Service, Proto, Port) ->
 %% gen_server callbacks
 %%===================================================================
 init([]) ->
+    HTTPd_Dispatch = cowboy_router:compile([ {'_', [{'_', etorrent_upnp_handler, []}]} ]),
+    {ok, _Pid} = cowboy:start_http(?HTTP_LISTENER, 10, [{port, 1234}],
+                                   [{env, [{dispatch, HTTPd_Dispatch}]}]),
     {ok, Sock} = gen_udp:open(0, [{active, true}, inet]),
     {ok, #state{ssdp_sock = Sock}, 0}.
 
@@ -275,6 +279,7 @@ handle_info(Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _S) ->
+    cowboy:stop_listener(?HTTP_LISTENER),
     ok.
 
 

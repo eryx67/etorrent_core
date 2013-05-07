@@ -22,15 +22,11 @@ start_link() ->
     SupName = {local, ?SERVER},
     supervisor:start_link(SupName, ?MODULE, []).
 
-    
+
 init([]) ->
     UPNP_NET = {etorrent_upnp_net, {etorrent_upnp_net, start_link, []},
                 permanent, 2000, worker, [etorrent_upnp_net]},
-    HTTPd_Dispatch = [ {'_', [{'_', etorrent_upnp_handler, []}]} ],
-    HTTPd = cowboy:child_spec(upnp_cowboy,
-                              10, cowboy_tcp_transport, [{port, 1234}],
-                              cowboy_http_protocol, [{dispatch, HTTPd_Dispatch}]),
-    Children = [UPNP_NET, HTTPd],
+    Children = [UPNP_NET],
     RestartStrategy = {one_for_one, 1, 60},
     {ok, {RestartStrategy, Children}}.
 
@@ -90,4 +86,3 @@ upnp_sup_tree_start_case() ->
 
 
 -endif.
-
