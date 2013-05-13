@@ -52,14 +52,14 @@ parse_msearch_resp(Resp) ->
             Loc = get_header(<<"LOCATION">>, Headers),
             Svr = get_header(<<"SERVER">>, Headers),
             ST  = get_header(<<"ST">>, Headers),
-            {Cat, Type, Ver} = case re:split(binary_to_list(ST), ":", [{return, binary}]) of
+            {Cat, Type, Ver} = case binary:split(ST, <<":">>, [global]) of
                                    [_, _, C, T, V] -> {C, T, V};
                                    [<<"upnp">>, ?UPNP_RD_NAME] -> {<<"device">>, ?UPNP_RD_NAME, <<>>};
                                    [<<"uuid">>, _] -> {<<"uuid">>, <<>>, <<>>};
                                    [C|_] -> {C, <<>>, <<>>}
                                end,
             USN = get_header(<<"USN">>, Headers),
-            [_, UUID|_] = re:split(binary_to_list(USN), ":", [{return, binary}]),
+            [_, UUID|_] = binary:split(USN, <<":">>, [global]),
             case Cat of
                 <<"device">> ->
                     {ok, device, [{type,    Type},
@@ -80,8 +80,8 @@ parse_msearch_resp(Resp) ->
     end.
 
 parse_max_age(Headers) ->
-    case get_header(<<"CACHE-CONTROL">>, Headers) of
-        <<"max-age = ", A/binary>> ->
+    case parse_kv(get_header(<<"CACHE-CONTROL">>, Headers)) of
+        {<<"max-age">>, A} ->
             list_to_integer(binary_to_list(A))
     end.
 
@@ -89,6 +89,10 @@ get_header(Ty, H) ->
     case lists:keyfind(Ty, 1, H) of
         {_, V} -> V
     end.
+
+parse_kv(KV) ->
+    [K, V] = binary:split(KV, [<<" = ">>, <<"=">>]),
+    {K, V}.
 
 %% @doc Parses given description of a UPnP device.
 %%
