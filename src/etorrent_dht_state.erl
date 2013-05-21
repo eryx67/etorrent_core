@@ -585,21 +585,27 @@ handle_info({inactive_node, InputID, IP, Port}, State) ->
         false -> false;
         true  -> has_timed_out(Node, NTimeout, PrevNTimers)
     end,
-
-    NewState = case {IsMember, HasTimed} of
-        {false, false} ->
-            State;
-        {true, false} ->
-            State;
-        {true, true} ->
-            lager:debug("Node at ~w:~w timed out", [IP, Port]),
-            spawn_keepalive(ensure_bin_id(ID), IP, Port),
-            {LActive,_} = get_timer(Node, PrevNTimers),
-            TmpNTimers  = del_timer(Node, PrevNTimers),
-            NewTimer    = node_timer_from(Now, NTimeout, Node),
-            NewNTimers  = add_timer(Node, LActive, NewTimer, TmpNTimers),
-            State#state{node_timers=NewNTimers}
-    end,
+    NewState = case IsMember of
+                   false ->
+                       State;
+                   true ->
+                       if HasTimed ->
+                               lager:debug("Node at ~w:~w timed out", [IP, Port]),
+                               spawn_keepalive(ID, IP, Port);
+                          true ->
+                               ok
+                       end,
+                       {LActive, TRef} = get_timer(Node, PrevNTimers),
+                       TimerCanceled = erlang:read_timer(TRef) == false,
+                       if (TimerCanceled orelse HasTimed) ->
+                               TmpNTimers  = del_timer(Node, PrevNTimers),
+                               NewTimer    = node_timer_from(Now, NTimeout, Node),
+                               NewNTimers  = add_timer(Node, LActive, NewTimer, TmpNTimers),
+                               State#state{node_timers=NewNTimers};
+                          true ->
+                               State
+                       end
+               end,
     {noreply, NewState};
 
 handle_info({inactive_bucket, Range}, State) ->
@@ -616,25 +622,32 @@ handle_info({inactive_bucket, Range}, State) ->
         false -> false;
         true  -> has_timed_out(Range, BTimeout, PrevBTimers)
     end,
-
-    NewState = case {BucketExists, HasTimed} of
-        {false, false} ->
-            State;
-        {true, false} ->
-            State;
-        {true, true} ->
-            lager:debug("Bucket timed out"),
-            BMembers   = b_members(Range, Buckets),
-            _ = spawn_refresh(Range,
-                    inactive_nodes(BMembers, NTimeout, NTimers),
-                    active_nodes(BMembers, NTimeout, NTimers)),
-            TmpBTimers = del_timer(Range, PrevBTimers),
-            LRecent    = least_recent(BMembers, NTimers),
-            NewTimer   = bucket_timer_from(
-                            Now, BTimeout, LRecent, NTimeout, Range),
-            NewBTimers = add_timer(Range, Now, NewTimer, TmpBTimers),
-            State#state{buck_timers=NewBTimers}
-    end,
+    NewState = case BucketExists of
+                   false ->
+                       State;
+                   true ->
+                       BMembers   = b_members(Range, Buckets),
+                       if HasTimed ->
+                               lager:debug("Bucket timed out"),
+                               _ = spawn_refresh(Range,
+                                                 inactive_nodes(BMembers, NTimeout, NTimers),
+                                                 active_nodes(BMembers, NTimeout, NTimers));
+                          true ->
+                               ok
+                       end,
+                       {_, TRef} = get_timer(Range, PrevBTimers),
+                       TimerCanceled = erlang:read_timer(TRef) == false,
+                       if (TimerCanceled orelse HasTimed) ->
+                               TmpBTimers = del_timer(Range, PrevBTimers),
+                               LRecent    = least_recent(BMembers, NTimers),
+                               NewTimer   = bucket_timer_from(
+                                              Now, BTimeout, LRecent, NTimeout, Range),
+                               NewBTimers = add_timer(Range, Now, NewTimer, TmpBTimers),
+                               State#state{buck_timers=NewBTimers};
+                          true ->
+                               State
+                       end
+               end,
     {noreply, NewState}.
 
 %% @private
@@ -848,7 +861,7 @@ timer_from(Time, Timeout, Msg) ->
     erlang:send_after(Interval, self(), Msg).
 
 ms_since(Time) ->
-    timer:now_diff(Time, now()) div 1000.
+    (timer:now_diff(Time, now()) + 500) div 1000.
 
 ms_between(Time, Timeout) ->
     MS = Timeout - ms_since(Time),
@@ -858,7 +871,7 @@ ms_between(Time, Timeout) ->
 
 has_timed_out(Item, Timeout, Times) ->
     {LastActive, _} = get_timer(Item, Times),
-    ms_since(LastActive) > Timeout.
+    ms_since(LastActive) >= Timeout.
 
 least_recent([], _) ->
     now();

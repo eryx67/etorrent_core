@@ -252,6 +252,9 @@ handle_cast({description, Device}, State) ->
     {ok, Devices, Services} = recv_desc(Device),
     [etorrent_upnp_entity:update(device,  D) || D <- Devices],
     [etorrent_upnp_entity:update(service, S) || S <- Services],
+    {noreply, State};
+handle_cast(Msg, State) ->
+    lager:warning("Unknown handle_cast: ~p", [Msg]),
     {noreply, State}.
 
 
