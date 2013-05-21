@@ -861,7 +861,7 @@ timer_from(Time, Timeout, Msg) ->
     erlang:send_after(Interval, self(), Msg).
 
 ms_since(Time) ->
-    (timer:now_diff(Time, now()) + 500) div 1000.
+    (timer:now_diff(now(), Time) + 500) div 1000.
 
 ms_between(Time, Timeout) ->
     MS = Timeout - ms_since(Time),
