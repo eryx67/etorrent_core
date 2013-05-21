@@ -498,7 +498,7 @@ handle_call({request_timeout, InputID, IP, Port}, _, State) ->
 
     NewNTimers = case b_is_member(ID, IP, Port, Buckets) of
         false ->
-            State;
+            PrevNTimers;
         true ->
             {LActive, _} = get_timer(Node, PrevNTimers),
             TmpNTimers   = del_timer(Node, PrevNTimers),
