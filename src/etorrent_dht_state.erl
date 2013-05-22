@@ -447,24 +447,29 @@ handle_call({insert_node, InputID, IP, Port}, _From, State) ->
         {true, true} ->
             PrevBTimers;
 
-        {false, true} ->
+        {false, _} ->
             AllPrevRanges = b_ranges(PrevBuckets),
             AllNewRanges  = b_ranges(NewBuckets),
+            %% route table can be splitted but node's bucket can remain full,
+            %% so we can get new bucket but node was not inserted
+            if length(AllPrevRanges) /= length(AllNewRanges) ->
+                DelRanges  = ordsets:subtract(AllPrevRanges, AllNewRanges),
+                NewRanges  = ordsets:subtract(AllNewRanges, AllPrevRanges),
 
-            DelRanges  = ordsets:subtract(AllPrevRanges, AllNewRanges),
-            NewRanges  = ordsets:subtract(AllNewRanges, AllPrevRanges),
+                DelBTimers = lists:foldl(fun(Range, Acc) ->
+                    del_timer(Range, Acc)
+                end, PrevBTimers, DelRanges),
 
-            DelBTimers = lists:foldl(fun(Range, Acc) ->
-                del_timer(Range, Acc)
-            end, PrevBTimers, DelRanges),
-
-            lists:foldl(fun(Range, Acc) ->
-                BMembers = b_members(Range, NewBuckets),
-                LRecent = least_recent(BMembers, NewNTimers),
-                BTimer = bucket_timer_from(
-                             Now, BTimeout, LRecent, NTimeout, Range),
-                add_timer(Range, Now, BTimer, Acc)
-            end, DelBTimers, NewRanges)
+                lists:foldl(fun(Range, Acc) ->
+                    BMembers = b_members(Range, NewBuckets),
+                    LRecent = least_recent(BMembers, NewNTimers),
+                    BTimer = bucket_timer_from(
+                                 Now, BTimeout, LRecent, NTimeout, Range),
+                    add_timer(Range, Now, BTimer, Acc)
+                            end, DelBTimers, NewRanges);
+                   true ->
+                        PrevBTimers
+            end
     end,
     NewState = State#state{
         buckets=NewBuckets,
