@@ -182,7 +182,7 @@ find_node_search(NodeID, Nodes) ->
 get_peers_search(InfoHash) ->
     Width = search_width(),
     Retry = search_retries(),
-    Nodes = etorrent_dht_state:closest_to(InfoHash, Width), 
+    Nodes = etorrent_dht_state:closest_to(InfoHash, Width),
     dht_iter_search(get_peers, InfoHash, Width, Retry, Nodes).
 
 -spec get_peers_search(infohash(), list(nodeinfo())) ->
@@ -191,7 +191,7 @@ get_peers_search(InfoHash, Nodes) ->
     Width = search_width(),
     Retry = search_retries(),
     dht_iter_search(get_peers, InfoHash, Width, Retry, Nodes).
-    
+
 
 dht_iter_search(SearchType, Target, Width, Retry, Nodes)  ->
     WithDist = [{etorrent_dht:distance(ID, Target), ID, IP, Port} || {ID, IP, Port} <- Nodes],
@@ -640,7 +640,7 @@ decode_response(ping, Values) ->
      etorrent_dht:integer_id(etorrent_bcoding:get_value(<<"id">>, Values));
 decode_response(find_node, Values) ->
     ID = etorrent_dht:integer_id(etorrent_bcoding:get_value(<<"id">>, Values)),
-    BinNodes = etorrent_bcoding:get_value(<<"nodes">>, Values),
+    BinNodes = etorrent_bcoding:get_value(<<"nodes">>, Values, <<>>),
     Nodes = compact_to_node_infos(BinNodes),
     {ID, Nodes};
 decode_response(get_peers, Values) ->
@@ -650,7 +650,7 @@ decode_response(get_peers, Values) ->
     MaybePeers = etorrent_bcoding:get_value(<<"values">>, Values, NoPeers),
     {Peers, Nodes} = case MaybePeers of
         NoPeers when is_reference(NoPeers) ->
-            BinCompact = etorrent_bcoding:get_value(<<"nodes">>, Values),
+            BinCompact = etorrent_bcoding:get_value(<<"nodes">>, Values, <<>>),
             INodes = compact_to_node_infos(BinCompact),
             {[], INodes};
         BinPeers when is_list(BinPeers) ->
