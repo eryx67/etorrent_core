@@ -508,37 +508,55 @@ handle_query('ping', _, IP, Port, MsgID, Self, _Tokens) ->
 
 handle_query('find_node', Params, IP, Port, MsgID, Self, _Tokens) ->
     Target = etorrent_dht:integer_id(etorrent_bcoding:get_value(<<"target">>, Params)),
-    CloseNodes = etorrent_dht_state:closest_to(Target),
-    BinCompact = node_infos_to_compact(CloseNodes),
-    Values = [{<<"nodes">>, BinCompact}],
-    return(IP, Port, MsgID, common_values(Self) ++ Values);
+    case request_attr_validate(id, Target) of
+        {error, Error} ->
+            return(IP, Port, MsgID, {error, 203, Error});
+        _ ->
+            CloseNodes = etorrent_dht_state:closest_to(Target),
+            BinCompact = node_infos_to_compact(CloseNodes),
+            Values = [{<<"nodes">>, BinCompact}],
+            return(IP, Port, MsgID, common_values(Self) ++ Values)
+    end;
 
 handle_query('get_peers', Params, IP, Port, MsgID, Self, Tokens) ->
     InfoHash = etorrent_dht:integer_id(etorrent_bcoding:get_value(<<"info_hash">>, Params)),
-    Values = case etorrent_dht_tracker:get_peers(InfoHash) of
-        [] ->
-            Nodes = etorrent_dht_state:closest_to(InfoHash),
-            BinCompact = node_infos_to_compact(Nodes),
-            [{<<"nodes">>, BinCompact}];
-        Peers ->
-            PeerList = [peers_to_compact([P]) || P <- Peers],
-            [{<<"values">>, PeerList}]
-    end,
-    Token = [{<<"token">>, token_value(IP, Port, Tokens)}],
-    return(IP, Port, MsgID, common_values(Self) ++ Token ++ Values);
+    case request_attr_validate(info_hash, InfoHash) of
+        {error, Error} ->
+            return(IP, Port, MsgID, {error, 203, Error});
+        _ ->
+            Values = case etorrent_dht_tracker:get_peers(InfoHash) of
+                         [] ->
+                             Nodes = etorrent_dht_state:closest_to(InfoHash),
+                             BinCompact = node_infos_to_compact(Nodes),
+                             [{<<"nodes">>, BinCompact}];
+                         Peers ->
+                             PeerList = [peers_to_compact([P]) || P <- Peers],
+                             [{<<"values">>, PeerList}]
+                     end,
+            Token = [{<<"token">>, token_value(IP, Port, Tokens)}],
+            return(IP, Port, MsgID, common_values(Self) ++ Token ++ Values)
+    end;
 
 handle_query('announce', Params, IP, Port, MsgID, Self, Tokens) ->
     InfoHash = etorrent_dht:integer_id(etorrent_bcoding:get_value(<<"info_hash">>, Params)),
     BTPort = etorrent_bcoding:get_value(<<"port">>,   Params),
-    Token = get_string(<<"token">>, Params),
-    case is_valid_token(Token, IP, Port, Tokens) of
-        true ->
-            etorrent_dht_tracker:announce(InfoHash, IP, BTPort);
-        false ->
-            FmtArgs = [IP, Port, Token],
-            error_logger:error_msg("Invalid token from ~w:~w ~w", FmtArgs)
-    end,
-    return(IP, Port, MsgID, common_values(Self)).
+    ValidateResults = [request_attr_validate(K, V)
+                       || {K, V} <- [{info_hash, InfoHash}, {port, BTPort}]],
+    ValidateErrors = [E || E={error, _} <- ValidateResults],
+    case ValidateErrors of
+        [{error, Error}|_] ->
+            return(IP, Port, MsgID, {error, 203, Error});
+        [] ->
+            Token = get_string(<<"token">>, Params),
+            case is_valid_token(Token, IP, Port, Tokens) of
+                true ->
+                    etorrent_dht_tracker:announce(InfoHash, IP, BTPort);
+                false ->
+                    FmtArgs = [IP, Port, Token],
+                    error_logger:error_msg("Invalid token from ~w:~w ~w", FmtArgs)
+            end,
+            return(IP, Port, MsgID, common_values(Self))
+    end.
 
 unique_message_id(IP, Port, Open) ->
     IntID = random:uniform(16#FFFF),
@@ -672,6 +690,12 @@ encode_query(Method, MsgID, Params) ->
        {<<"a">>, Params}],
     etorrent_bcoding:encode(Msg).
 
+encode_response(MsgId, {error, Code, ErrorMsg}) ->
+    Msg = [
+           {<<"y">>, <<"e">>},
+           {<<"t">>, MsgId},
+           {<<"e">>, [Code, ErrorMsg]}],
+    etorrent_bcoding:encode(Msg);
 encode_response(MsgID, Values) ->
     Msg = [
        {<<"y">>, <<"r">>},
@@ -720,6 +744,21 @@ node_infos_to_compact([], Acc) ->
 node_infos_to_compact([{ID, {A0, A1, A2, A3}, Port}|T], Acc) ->
     CNode = <<ID:160, A0, A1, A2, A3, Port:16>>,
     node_infos_to_compact(T, <<Acc/binary, CNode/binary>>).
+
+request_attr_validate(_Attr=id, Val) when is_integer(Val) ->
+    true;
+request_attr_validate(_Attr=id, _Val) ->
+    {error, <<"invalid id">>};
+request_attr_validate(_Attr=info_hash, Val) when is_integer(Val) ->
+    true;
+request_attr_validate(_Attr=info_hash, _Val) ->
+    {error, <<"invalid info_hash">>};
+request_attr_validate(_Attr=port, Val) when is_integer(Val),
+                                            Val > 0,
+                                            Val < 16#ffff ->
+    true;
+request_attr_validate(_Attr=port, _Val) ->
+    {error, <<"invalid port">>}.
 
 -ifdef(EUNIT).
 
