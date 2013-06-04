@@ -18,6 +18,7 @@
          decode_bitfield/2,
          encode_bitfield/2,
          decode_msg/1,
+         encode_msg/1,
          remaining_bytes/1,
          complete_handshake/3,
          receive_handshake/1,
@@ -392,11 +393,3 @@ ext_msg_contents_test() ->
     ?assertEqual(Expected, Computed).
 
 -endif.
-
-
-
-
-
-
-
-
