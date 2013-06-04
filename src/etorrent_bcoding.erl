@@ -24,7 +24,7 @@
 
 %% API
 % Encoding and parsing
--export([encode/1, decode/1, parse_file/1]).
+-export([encode/1, decode/1, decode_extra/1, parse_file/1]).
 
 % Retrieval
 -export([get_value/2, get_value/3, get_info_value/2, get_info_value/3,
@@ -55,13 +55,22 @@ encode(L) when is_list(L) -> ["l", [encode(I) || I <- L], "e"].
 %% @doc Decode a string or binary to a bcode() structure
 %% @end
 -spec decode(string() | binary()) -> {ok, bcode()} | {error, _Reason}.
-decode(Bin) when is_binary(Bin) -> decode(binary_to_list(Bin));
-decode(String) when is_list(String) ->
+decode(Bin) ->
+    case decode_extra(Bin) of
+        Error={error, _} ->
+            Error;
+        {Res, _} ->
+            {ok, Res}
+    end.
+%% @doc Decode a string or binary to a bcode() structure and
+%% undecoded rest bytes.
+%% This bytes are usually attached to messages in protocols extensions.
+%% @end
+-spec decode_extra(string() | binary()) -> {bcode(), bcode()} | {error, _Reason}.
+decode_extra(Bin) when is_binary(Bin) -> decode_extra(binary_to_list(Bin));
+decode_extra(String) when is_list(String) ->
     try
-        %% Don't check _Extra here. Some bcoding encoders fail to produce it
-        %% correctly and adds garbage in the end.
-        {Res, _Extra} = decode_b(String),
-        {ok, Res}
+        decode_b(String)
     catch
         error:Reason -> {error, Reason}
     end.
