@@ -15,6 +15,7 @@
 
 -export([incoming_packet/2,
          send_msg/2,
+         send_msg/3,
          decode_bitfield/2,
          encode_bitfield/2,
          decode_msg/1,
@@ -125,7 +126,10 @@ incoming_packet({partial, {Left, IOL}}, Packet)
 %% @end
 -spec send_msg(port(), packet()) -> {ok | {error, term()}, integer()}.
 send_msg(Socket, Msg) ->
-    Datagram = encode_msg(Msg),
+    send_msg(Socket, Msg, <<>>).
+
+send_msg(Socket, Msg, Payload) when is_binary(Payload) ->
+    Datagram = << (encode_msg(Msg))/binary, Payload/binary >>,
     Sz = byte_size(Datagram),
     {gen_tcp:send(Socket, [<<Sz:32/big>>, Datagram]), Sz}.
 
