@@ -43,8 +43,7 @@
 -module(etorrent_dht_state).
 -behaviour(gen_server).
 -define(K, 8).
--define(in_range(IDExpr, MinExpr, MaxExpr),
-    ((IDExpr >= MinExpr) and (IDExpr < MaxExpr))).
+-define(in_range(Dist, Min, Max), ((Dist >= Min) andalso (Dist < Max))).
 
 
 -export([srv_name/0,
@@ -367,16 +366,16 @@ handle_call({is_interesting, InputID, IP, Port}, _From, State) ->
         buckets=Buckets,
         node_timeout=NTimeout,
         node_timers=NTimers} = State,
-    IsInteresting = case b_is_member(ID, IP, Port, Buckets) of
+    IsInteresting = case b_is_member(ID, IP, Port, Self, Buckets) of
         true -> false;
         false ->
-            BMembers = b_members(ID, Buckets),
+            BMembers = b_members(ID, Self, Buckets),
             Inactive = inactive_nodes(BMembers, NTimeout, NTimers),
             case (Inactive =/= []) or (length(BMembers) < ?K) of
                 true -> true;
                 false ->
                     TryBuckets = b_insert(Self, ID, IP, Port, Buckets),
-                    b_is_member(ID, IP, Port, TryBuckets)
+                    b_is_member(ID, IP, Port, Self, TryBuckets)
             end
     end,
     {reply, IsInteresting, State};
@@ -393,11 +392,11 @@ handle_call({insert_node, InputID, IP, Port}, _From, State) ->
         node_timeout=NTimeout,
         buck_timeout=BTimeout} = State,
 
-    IsPrevMember = b_is_member(ID, IP, Port, PrevBuckets),
+    IsPrevMember = b_is_member(ID, IP, Port, Self, PrevBuckets),
     Inactive = case IsPrevMember of
         true  -> [];
         false ->
-            PrevBMembers = b_members(ID, PrevBuckets),
+            PrevBMembers = b_members(ID, Self, PrevBuckets),
             inactive_nodes(PrevBMembers, NTimeout, PrevNTimers)
     end,
 
@@ -415,7 +414,7 @@ handle_call({insert_node, InputID, IP, Port}, _From, State) ->
         {false, [{OID, OIP, OPort}=Old|_]} ->
             % If there is one or more disconnected nodes in the bucket
             % Remove the old one and insert the new node.
-            TmpBuckets = b_delete(OID, OIP, OPort, PrevBuckets),
+            TmpBuckets = b_delete(OID, OIP, OPort, Self, PrevBuckets),
             {b_insert(Self, ID, IP, Port, TmpBuckets), Old}
     end,
 
@@ -430,7 +429,7 @@ handle_call({insert_node, InputID, IP, Port}, _From, State) ->
 
 
 
-    IsNewMember = b_is_member(ID, IP, Port, NewBuckets),
+    IsNewMember = b_is_member(ID, IP, Port, Self, NewBuckets),
     NewNTimers  = case {IsPrevMember, IsNewMember} of
         {false, false} ->
             TmpNTimers;
@@ -461,7 +460,7 @@ handle_call({insert_node, InputID, IP, Port}, _From, State) ->
                 end, PrevBTimers, DelRanges),
 
                 lists:foldl(fun(Range, Acc) ->
-                    BMembers = b_members(Range, NewBuckets),
+                    BMembers = b_members(Range, Self, NewBuckets),
                     LRecent = least_recent(BMembers, NewNTimers),
                     BTimer = bucket_timer_from(
                                  Now, BTimeout, LRecent, NTimeout, Range),
@@ -483,12 +482,12 @@ handle_call({insert_node, InputID, IP, Port}, _From, State) ->
 handle_call({closest_to, InputID, NumNodes}, _, State) ->
     ID = ensure_int_id(InputID),
     #state{
+        node_id=Self,
         buckets=Buckets,
         node_timers=NTimers,
         node_timeout=NTimeout} = State,
-    AllNodes   = b_node_list(Buckets),
-    Active     = active_nodes(AllNodes, NTimeout, NTimers),
-    CloseNodes = etorrent_dht:closest_to(ID, Active, NumNodes),
+    NF = fun (N) -> not has_timed_out(N, NTimeout, NTimers) end,
+    CloseNodes = b_closest_to(ID, Self, Buckets, NF, NumNodes),
     {reply, CloseNodes, State};
 
 
@@ -497,11 +496,12 @@ handle_call({request_timeout, InputID, IP, Port}, _, State) ->
     Node = {ID, IP, Port},
     Now  = now(),
     #state{
+        node_id=Self,
         buckets=Buckets,
         node_timeout=NTimeout,
         node_timers=PrevNTimers} = State,
 
-    NewNTimers = case b_is_member(ID, IP, Port, Buckets) of
+    NewNTimers = case b_is_member(ID, IP, Port, Self, Buckets) of
         false ->
             PrevNTimers;
         true ->
@@ -518,16 +518,17 @@ handle_call({request_success, InputID, IP, Port}, _, State) ->
     Now  = now(),
     Node = {ID, IP, Port},
     #state{
+        node_id=Self,
         buckets=Buckets,
         node_timers=PrevNTimers,
         buck_timers=PrevBTimers,
         node_timeout=NTimeout,
         buck_timeout=BTimeout} = State,
-    NewState = case b_is_member(ID, IP, Port, Buckets) of
+    NewState = case b_is_member(ID, IP, Port, Self, Buckets) of
         false ->
             State;
         true ->
-            Range = b_range(ID, Buckets),
+            Range = b_range(ID, Self, Buckets),
 
             {NLActive, _} = get_timer(Node, PrevNTimers),
             TmpNTimers    = del_timer(Node, PrevNTimers),
@@ -536,7 +537,7 @@ handle_call({request_success, InputID, IP, Port}, _, State) ->
 
             {BActive, _} = get_timer(Range, PrevBTimers),
             TmpBTimers   = del_timer(Range, PrevBTimers),
-            BMembers     = b_members(Range, Buckets),
+            BMembers     = b_members(Range, Self, Buckets),
             LNRecent     = least_recent(BMembers, NewNTimers),
             BTimer       = bucket_timer_from(
                                BActive, BTimeout, LNRecent, NTimeout, Range),
@@ -581,11 +582,12 @@ handle_info({inactive_node, InputID, IP, Port}, State) ->
     Now = now(),
     Node = {ID, IP, Port},
     #state{
+        node_id=Self,
         buckets=Buckets,
         node_timers=PrevNTimers,
         node_timeout=NTimeout} = State,
 
-    IsMember = b_is_member(ID, IP, Port, Buckets),
+    IsMember = b_is_member(ID, IP, Port, Self, Buckets),
     HasTimed = case IsMember of
         false -> false;
         true  -> has_timed_out(Node, NTimeout, PrevNTimers)
@@ -616,6 +618,7 @@ handle_info({inactive_node, InputID, IP, Port}, State) ->
 handle_info({inactive_bucket, Range}, State) ->
     Now = now(),
     #state{
+        node_id=Self,
         buckets=Buckets,
         node_timers=NTimers,
         buck_timers=PrevBTimers,
@@ -631,7 +634,7 @@ handle_info({inactive_bucket, Range}, State) ->
                    false ->
                        State;
                    true ->
-                       BMembers   = b_members(Range, Buckets),
+                       BMembers   = b_members(Range, Self, Buckets),
                        if HasTimed ->
                                lager:debug("Bucket timed out"),
                                _ = spawn_refresh(Range,
@@ -702,51 +705,55 @@ code_change(_, _, State) ->
 % Create a new bucket list
 %
 b_new() ->
-    MaxID = trunc(math:pow(2, 160)),
+    MaxID = 1 bsl 160,
     [{0, MaxID, []}].
 
 %
 % Insert a new node into a bucket list
 %
-b_insert(Self, ID, IP, Port, Buckets) ->
-    true = is_integer(Self),
-    true = is_integer(ID),
-    b_insert_(Self, ID, IP, Port, Buckets).
+b_insert(Self, ID, IP, Port, Buckets) when is_integer(ID),
+                                           is_integer(Port) ->
+    {Rest, Acc} = b_insert_(distance(Self, ID), Self, ID, IP, Port, ?K, Buckets, []),
+    lists:reverse(Acc) ++ Rest.
 
-
-b_insert_(Self, ID, IP, Port, [{Min, Max, Members}|T])
-when ?in_range(ID, Min, Max), ?in_range(Self, Min, Max) ->
+b_insert_(0, _Self, _ID, _IP, _Port, _K, Buckets, Acc) ->
+    {Buckets, Acc};
+b_insert_(1, _Self, ID, IP, Port, _K, [{Min=0, Max=1, Members}], Acc) ->
+    NewMembers = ordsets:add_element({ID, IP, Port}, Members),
+    {[{Min, Max, NewMembers}], Acc};
+b_insert_(Dist, Self, ID, IP, Port, K, [{Min, Max, Members}], Acc) when ?in_range(Dist, Min, Max) ->
     NumMembers = length(Members),
-    if  NumMembers < ?K ->
+    if  NumMembers < K ->
             NewMembers = ordsets:add_element({ID, IP, Port}, Members),
-            [{Min, Max, NewMembers}|T];
-
-        NumMembers == ?K, (Max - Min) > 2 ->
+            {[{Min, Max, NewMembers}], Acc};
+        NumMembers == K ->
             Diff  = Max - Min,
             Half  = Max - (Diff div 2),
-            Lower = [N || {MID, _, _}=N <- Members, ?in_range(MID, Min, Half)],
-            Upper = [N || {MID, _, _}=N <- Members, ?in_range(MID, Half, Max)],
-            WithSplit = [{Min, Half, Lower}, {Half, Max, Upper}|T],
-            b_insert_(Self, ID, IP, Port, WithSplit);
-
-        NumMembers == ?K ->
-           [{Min, Max, Members}|T]
+            {Lower, Upper} = lists:foldl(fun ({MID, _, _}=N, {Ls,Us}) ->
+                                                 case ?in_range(distance(MID, Self), Min, Half) of
+                                                     true ->
+                                                         {[N|Ls], Us};
+                                                     false ->
+                                                         {Ls, [N|Us]}
+                                                 end
+                                         end, {[], []}, Members),
+            WithSplit = [{Half, Max, lists:reverse(Upper)},
+                         {Min, Half, lists:reverse(Lower)}],
+            b_insert_(Dist, Self, ID, IP, Port, K, WithSplit, Acc)
     end;
-
-b_insert_(_, ID, IP, Port, [{Min, Max, Members}|T])
-when ?in_range(ID, Min, Max) ->
+b_insert_(Dist, _Self, ID, IP, Port, K, [{Min, Max, Members}|T], Acc) when ?in_range(Dist, Min, Max) ->
     NumMembers = length(Members),
-    if  NumMembers < ?K ->
+    if  NumMembers < K ->
             NewMembers = ordsets:add_element({ID, IP, Port}, Members),
-            [{Min, Max, NewMembers}|T];
-        NumMembers == ?K ->
-            [{Min, Max, Members}|T]
+            {[{Min, Max, NewMembers}|T], Acc};
+        NumMembers == K ->
+            {[{Min, Max, Members}|T], Acc}
     end;
+b_insert_(Dist, Self, ID, IP, Port, K, [H|T], Acc) ->
+    b_insert_(Dist, Self, ID, IP, Port, K, T, [H|Acc]).
+%%%
 
-b_insert_(Self, ID, IP, Port, [H|T]) ->
-    [H|b_insert_(Self, ID, IP, Port, T)].
-
-%
+                                                %
 % Get all ranges present in a bucket list
 %
 b_ranges([]) ->
@@ -754,43 +761,63 @@ b_ranges([]) ->
 b_ranges([{Min, Max, _}|T]) ->
     [{Min, Max}|b_ranges(T)].
 
-%
-% Delete a node from a bucket list
-%
-b_delete(_, _, _, []) ->
-    [];
-b_delete(ID, IP, Port, [{Min, Max, Members}|T])
-when ?in_range(ID, Min, Max) ->
+%%
+%% Return the range of the bucket that a node falls within
+%%
+b_range(ID, Self, Buckets) ->
+    b_range_(distance(ID, Self), Buckets).
+
+b_range_(Dist, [{Min, Max, _}|_]) when ?in_range(Dist, Min, Max) ->
+    {Min, Max};
+b_range_(Dist, [_|T]) ->
+    b_range_(Dist, T).
+
+%%
+%% Delete a node from a bucket list
+%%
+b_delete(ID, IP, Port, Self, Buckets) ->
+    {Rest, Acc} = b_delete_(distance(ID, Self), ID, IP, Port, Buckets, []),
+    lists:reverse(Acc) ++ Rest.
+
+b_delete_(_, _, _, _, [], Acc) ->
+    {[], Acc};
+b_delete_(Dist, ID, IP, Port, [{Min, Max, Members}|T], Acc) when ?in_range(Dist, Min, Max) ->
     NewMembers = ordsets:del_element({ID, IP, Port}, Members),
-    [{Min, Max, NewMembers}|T];
-b_delete(ID, IP, Port, [H|T]) ->
-    [H|b_delete(ID, IP, Port, T)].
+    {[{Min, Max, NewMembers}|T], Acc};
+b_delete_(Dist, ID, IP, Port, [H|T], Acc) ->
+    b_delete_(Dist, ID, IP, Port, T, [H|Acc]).
 
-%
-% Return all members of the bucket that this node is a member of
-%
-b_members({Min, Max}, [{Min, Max, Members}|_]) ->
+%%
+%% Return all members of the bucket that this node is a member of
+%%
+b_members(Range={_Min, _Max}, _Self, Buckets) ->
+    b_members_1(Range, Buckets);
+b_members(ID, Self, Buckets) ->
+    b_members_2(distance(ID, Self), Buckets).
+
+b_members_1({Min, Max}, [{Min, Max, Members}|_]) ->
     Members;
-b_members({Min, Max}, [_|T]) ->
-    b_members({Min, Max}, T);
+b_members_1({Min, Max}, [_|T]) ->
+    b_members_1({Min, Max}, T).
 
-b_members(ID, [{Min, Max, Members}|_])
-when ?in_range(ID, Min, Max) ->
+b_members_2(Dist, [{Min, Max, Members}|_]) when ?in_range(Dist, Min, Max) ->
     Members;
-b_members(ID, [_|T]) ->
-    b_members(ID, T).
+b_members_2(Dist, [_|T]) ->
+    b_members_2(Dist, T).
 
+%%
+%% Check if a node is a member of a bucket list
+%%
+b_is_member(ID, IP, Port, Self, Buckets) ->
+    b_is_member_(distance(Self, ID), ID, IP, Port, Buckets).
 
-%
-% Check if a node is a member of a bucket list
-%
-b_is_member(_, _, _, []) ->
+b_is_member_(_, _, _, _, []) ->
     false;
-b_is_member(ID, IP, Port, [{Min, Max, Members}|_])
-when ?in_range(ID, Min, Max) ->
+b_is_member_(Dist, ID, IP, Port, [{Min, Max, Members}|_]) when ?in_range(Dist, Min, Max) ->
     lists:member({ID, IP, Port}, Members);
-b_is_member(ID, IP, Port, [_|T]) ->
-    b_is_member(ID, IP, Port, T).
+b_is_member_(Dist, ID, IP, Port, [_|T]) ->
+    b_is_member_(Dist, ID, IP, Port, T).
+
 
 %
 % Check if a bucket exists in a bucket list
@@ -802,6 +829,32 @@ b_has_bucket({Min, Max}, [{Min, Max, _}|_]) ->
 b_has_bucket({Min, Max}, [{_, _, _}|T]) ->
     b_has_bucket({Min, Max}, T).
 
+b_closest_to(ID, Self, Buckets, NodeFilterF, Num) ->
+    lists:flatten(b_closest_to_1(distance(ID, Self), ID, Num, Buckets, NodeFilterF, [], [])).
+
+b_closest_to_1(_, _, 0, _, _, _, Ret) ->
+    Ret;
+b_closest_to_1(Dist, ID, Num, [], NodeFilterF, Rest, Ret) ->
+    b_closest_to_2(Dist, ID, Num, Rest, NodeFilterF, Ret);
+b_closest_to_1(Dist, ID, Num, [{Min, _Max, Members}|T], NodeFilterF, Rest, Acc)
+  when (Dist band Min) > 0 ->
+    CloseNodes = etorrent_dht:closest_to(ID, [M || M <- Members, NodeFilterF(M)], Num),
+    NxtNum = max(0, Num - length(CloseNodes)),
+    NxtAcc = [CloseNodes|Acc],
+    b_closest_to_1(Dist, ID, NxtNum, T, NodeFilterF, Rest, NxtAcc);
+b_closest_to_1(Dist, ID, Num, [H|T], NodeFilterF, Rest, Acc) ->
+    b_closest_to_1(Dist, ID, Num, T, NodeFilterF, [H|Rest], Acc).
+
+b_closest_to_2(_, _, 0, _, _, Ret) ->
+    Ret;
+b_closest_to_2(_, _, _, [], _, Ret) ->
+    Ret;
+b_closest_to_2(Dist, ID, Num, [{_Min, _Max, Members}|T], NodeFilterF, Acc) ->
+    ClosestNodes = etorrent_dht:closest_to(ID, [M || M <- Members, NodeFilterF(M)], Num) ++ Acc,
+    NxtN = max(0, Num - length(ClosestNodes)),
+    NxtAcc = [ClosestNodes|Acc],
+    b_closest_to_2(Dist, ID, NxtN, T, NodeFilterF, NxtAcc).
+
 %
 % Return a list of all members, combined, in all buckets.
 %
@@ -809,16 +862,6 @@ b_node_list([]) ->
     [];
 b_node_list([{_, _, Members}|T]) ->
     Members ++ b_node_list(T).
-
-%
-% Return the range of the bucket that a node falls within
-%
-b_range(ID, [{Min, Max, _}|_]) when ?in_range(ID, Min, Max) ->
-    {Min, Max};
-b_range(ID, [_|T]) ->
-    b_range(ID, T).
-
-
 
 inactive_nodes(Nodes, Timeout, Timers) ->
     [N || N <- Nodes, has_timed_out(N, Timeout, Timers)].
@@ -839,7 +882,7 @@ add_timer(Item, ATime, TRef, Timers) ->
 del_timer(Item, Timers) ->
     {_, TRef} = get_timer(Item, Timers),
     _ = erlang:cancel_timer(TRef),
-    gb_trees:delete(Item, Timers).
+    gb_trees:b_delete(Item, Timers).
 
 node_timer_from(Time, Timeout, {ID, IP, Port}) ->
     Msg = {inactive_node, ID, IP, Port},
@@ -884,6 +927,8 @@ least_recent(Items, Times) ->
     ATimes = [element(1, get_timer(I, Times)) || I <- Items],
     lists:min(ATimes).
 
+distance(ID1, ID2) ->
+    ID1 bxor ID2.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -897,8 +942,8 @@ setup() ->
     ok = dump_state(get(valid), get(testid), []).
 
 teardown(_) ->
-    file:delete(get(empty)),
-    file:delete(get(valid)).
+    file:b_delete(get(empty)),
+    file:b_delete(get(valid)).
 
 dht_state_test_() ->
     {setup, local,
