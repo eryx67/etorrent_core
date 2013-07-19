@@ -882,7 +882,7 @@ add_timer(Item, ATime, TRef, Timers) ->
 del_timer(Item, Timers) ->
     {_, TRef} = get_timer(Item, Timers),
     _ = erlang:cancel_timer(TRef),
-    gb_trees:b_delete(Item, Timers).
+    gb_trees:delete(Item, Timers).
 
 node_timer_from(Time, Timeout, {ID, IP, Port}) ->
     Msg = {inactive_node, ID, IP, Port},
@@ -942,8 +942,8 @@ setup() ->
     ok = dump_state(get(valid), get(testid), []).
 
 teardown(_) ->
-    file:b_delete(get(empty)),
-    file:b_delete(get(valid)).
+    file:delete(get(empty)),
+    file:delete(get(valid)).
 
 dht_state_test_() ->
     {setup, local,
