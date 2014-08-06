@@ -9,7 +9,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_requestor/2, start_announce/3]).
+-export([start_link/0, start_requestor/2, start_announce/3, start_scrape/3]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -25,9 +25,9 @@ start_link() ->
 
 %% @doc Start a new requestor child under the supervisor
 %% @end
-start_requestor(Tr, N) ->
+start_requestor(Tracker, N) ->
     {ok, Pid} =
-	supervisor:start_child(?SERVER, [requestor, Tr, N]),
+	supervisor:start_child(?SERVER, [requestor, Tracker, N]),
     {ok, Pid}.
 
 %% @doc Start a new announcer child under the supervisor
@@ -35,6 +35,11 @@ start_requestor(Tr, N) ->
 start_announce(From, Tracker, PL) ->
     {ok, Pid} =
 	supervisor:start_child(?SERVER, [announce, From, Tracker, PL]),
+    {ok, Pid}.
+
+start_scrape(From, Tracker, PL) ->
+    {ok, Pid} =
+	supervisor:start_child(?SERVER, [scrape, From, Tracker, PL]),
     {ok, Pid}.
 
 %%====================================================================

@@ -26,6 +26,7 @@
 -define(ANNOUNCE, 1).
 -define(SCRAPE, 2).
 -define(ERROR, 3).
+-define(ERROR_1, 50331648). % little endian bug in some trackers
 
 -type ipaddr() :: etorrent_types:ipaddr().
 -type portnum() :: etorrent_types:portnum().
@@ -84,7 +85,10 @@ encode(P) ->
 	      0:32/big,
 	      Key:32/big,
 	      (-1):32/big,
-	      Port:16/big>>
+	      Port:16/big>>;
+        {scrape_request, ConnID, Tid, InfoHashes} ->
+            IHs = << <<IH/binary>> || <<IH/binary>> <- InfoHashes >>,
+	    <<ConnID:64/big, ?SCRAPE:32/big, Tid/binary, IHs/binary >>
     end.
 
 %% @doc Decode packet and dispatch it.
@@ -176,7 +180,8 @@ decode_action(I) ->
 	?CONNECT -> connect;
 	?ANNOUNCE -> announce;
 	?SCRAPE -> scrape;
-	?ERROR -> error
+	?ERROR -> error;
+        ?ERROR_1 -> error
     end.
 
 decode_scrape( <<>>) -> [];

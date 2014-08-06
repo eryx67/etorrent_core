@@ -35,7 +35,7 @@
 -type conn_id() :: integer().
 -record(state, { try_count = -1 :: integer(),
 	         tracker        :: tracker_id(),
-		 ty             :: announce | connid_gather,
+		 ty             :: announce | requestor | scrape,
 		 connid = none  :: none | integer(),
 		 reply = none   :: none | from_tag(),
 		 properties = [] :: [{term(), term()}], % Proplist
@@ -55,16 +55,18 @@
 -spec start_link('requestor', tracker_id(), integer()) ->
 			{ok, pid()} | {error, term()}.
 start_link(requestor, Tracker, N) ->
-    gen_server:start_link(?MODULE, [{connid_gather, Tracker, N}], []).
+    gen_server:start_link(?MODULE, [{requestor, Tracker, N}], []).
 
-%% @doc Start a normal announce-request
+%% @doc Start a normal announce or scrape request
 %%   We are given to whom we should reply back in From, what Tracker
 %%   to call up, and a list of properties to send forth.
 %% @end
--spec start_link('announce',from_tag(),tracker_id(),_) ->
+-spec start_link('announce' | 'scrape',from_tag(),tracker_id(),_) ->
 			'ignore' | {'error',_} | {'ok',pid()}.
 start_link(announce, From, Tracker, PL) ->
-    gen_server:start_link(?MODULE, [{announce, From, Tracker, PL}], []).
+    gen_server:start_link(?MODULE, [{announce, From, Tracker, PL}], []);
+start_link(scrape, From, Tracker, PL) ->
+    gen_server:start_link(?MODULE, [{scrape, From, Tracker, PL}], []).
 
 %% This internal function is used to forward a working connid to an announcer
 %% @private
@@ -97,9 +99,12 @@ msg(Pid, M) ->
 init([{announce, From, Tracker, PL}]) ->
     etorrent_udp_tracker_mgr:reg_announce(Tracker, PL),
     {ok, #state { tracker = Tracker, ty = announce, reply = From, properties = PL }};
-init([{connid_gather, Tracker, N}]) ->
-    etorrent_udp_tracker_mgr:reg_connid_gather(Tracker),
-    {ok, #state { tracker = Tracker, ty = connid_gather, try_count = N}, 0}.
+init([{scrape, From, Tracker, PL}]) ->
+    etorrent_udp_tracker_mgr:reg_scrape(Tracker, PL),
+    {ok, #state { tracker = Tracker, ty = scrape, reply = From, properties = PL }};
+init([{requestor, Tracker, N}]) ->
+    etorrent_udp_tracker_mgr:reg_requestor(Tracker),
+    {ok, #state { tracker = Tracker, ty = requestor, try_count = N}, 0}.
 
 %% @private
 handle_call(_Request, _From, State) ->
@@ -114,12 +119,33 @@ handle_cast({connid, ConnID}, #state { ty = announce,
                                        tracker = Tracker } = S) ->
     Tid = announce_request(Tracker, ConnID, PL, 0),
     {noreply, S#state { connid = ConnID, try_count = 0, tid = Tid }};
+handle_cast({connid, ConnID}, #state { ty = scrape,
+                                       properties = PL,
+                                       tracker = Tracker } = S) ->
+    Tid = scrape_request(Tracker, ConnID, PL, 0),
+    {noreply, S#state { connid = ConnID, try_count = 0, tid = Tid }};
 handle_cast({cancel_connid, ConnID}, #state { connid = ConnID} = S) ->
     {noreply, S#state { connid = none }};
 handle_cast({msg, {Tid, {announce_response, Peers, Status}}},
             #state { reply = R, ty = announce, tid = Tid } = S) ->
     etorrent_udp_tracker_mgr:unreg_tr_id(Tid),
     announce_reply(R, Peers, Status),
+    {stop, normal, S};
+handle_cast({msg, {Tid, {scrape_response, Peers}}},
+            #state { reply = R, ty = scrape, tid = Tid } = S) ->
+    etorrent_udp_tracker_mgr:unreg_tr_id(Tid),
+    scrape_reply(R, Peers),
+    {stop, normal, S};
+%% don't know why, but some trackers return error on first scrape request
+handle_cast({msg, {Tid, {error_response, Tid, _Msg}}},
+            #state { tid = Tid, try_count = 0, ty = TY } = S)  when TY == announce;
+                                                                    TY == scrape ->
+    S1 = repeat_request(S),
+    {noreply, S1};
+handle_cast({msg, {Tid, {error_response, Tid, Msg}}},
+            #state { reply = R, tid = Tid } = S) ->
+    etorrent_udp_tracker_mgr:unreg_tr_id(Tid),
+    error_reply(R, Msg),
     {stop, normal, S};
 handle_cast({msg, {Tid, {conn_response, ConnID}}},
             #state { tracker = Tracker, tid = Tid } = S) ->
@@ -133,25 +159,11 @@ handle_cast(Msg, State) ->
     {noreply, State}.
 
 %% @private
-handle_info(timeout, #state { tracker=Tracker,
-                              try_count=N,
-                              ty = announce,
-                              tid = OldTid,
-                              connid = ConnID } = S) ->
-    case OldTid of
-        none -> ignore;
-        T when is_binary(T) -> etorrent_udp_tracker_mgr:unreg_tr_id(OldTid)
-    end,
-    case ConnID of
-        none ->
-            etorrent_udp_tracker_mgr:need_requestor(Tracker, N),
-            {noreply, S#state { tid = none, try_count = 0 }};
-        K when is_integer(K) ->
-            Tid = announce_request(Tracker, ConnID, S#state.properties, inc(N)),
-            {noreply, S#state { tid = Tid, try_count = inc(N)}}
-    end;
+handle_info(timeout, S = #state{ty=TY}) when TY == announce;
+                                             TY == scrape ->
+    {noreply, repeat_request(S)};
 handle_info(timeout, #state { tracker=Tracker, try_count=N,
-                              ty = connid_gather, tid = OldTid } = S) ->
+                              ty = requestor, tid = OldTid } = S) ->
     case OldTid of
         none -> ignore;
         T when is_binary(T) -> etorrent_udp_tracker_mgr:unreg_tr_id(OldTid)
@@ -172,6 +184,27 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%--------------------------------------------------------------------
 
+repeat_request(#state { tracker=Tracker,
+                        try_count=N,
+                        ty = TY,
+                        tid = OldTid,
+                        connid = ConnID } = S) ->
+    case OldTid of
+        none -> ignore;
+        T when is_binary(T) -> etorrent_udp_tracker_mgr:unreg_tr_id(OldTid)
+    end,
+    case ConnID of
+        none ->
+            etorrent_udp_tracker_mgr:need_requestor(Tracker, N),
+            S#state { tid = none, try_count = 0 };
+        K when is_integer(K) ->
+            Tid = case TY of
+                      announce -> announce_request(Tracker, ConnID, S#state.properties, inc(N));
+                      scrape -> scrape_request(Tracker, ConnID, S#state.properties, inc(N))
+                  end,
+            S#state { tid = Tid, try_count = inc(N)}
+    end.
+
 announce_request({TrIP, TrPort}, ConnID, PropL, N) ->
     [IH, PeerId, Down, Left, Up, Event, Key, Port] =
 	[proplists:get_value(K, PropL)
@@ -181,6 +214,15 @@ announce_request({TrIP, TrPort}, ConnID, PropL, N) ->
     erlang:send_after(expire_time(N), self(), timeout),
     Msg = {announce_request, ConnID, Tid, IH, PeerId, {Down, Left, Up}, Event, Key,
 	   Port},
+    etorrent_udp_tracker_mgr:msg({TrIP, TrPort}, Msg),
+    Tid.
+
+scrape_request({TrIP, TrPort}, ConnID, PropL, N) ->
+    IHs = PropL,
+    Tid = etorrent_udp_tracker_proto:new_tid(),
+    etorrent_udp_tracker_mgr:reg_tr_id(Tid),
+    erlang:send_after(expire_time(N), self(), timeout),
+    Msg = {scrape_request, ConnID, Tid, IHs},
     etorrent_udp_tracker_mgr:msg({TrIP, TrPort}, Msg),
     Tid.
 
@@ -198,6 +240,12 @@ expire_time(N) ->
 
 announce_reply(From, Peers, Status) ->
     gen_server:reply(From, {announce, Peers, Status}).
+
+scrape_reply(From, Peers) ->
+    gen_server:reply(From, {scrape, Peers}).
+
+error_reply(From, Msg) ->
+    gen_server:reply(From, {error, Msg}).
 
 inc(8) -> 8;
 inc(N) when is_integer(N), N < 8 ->
